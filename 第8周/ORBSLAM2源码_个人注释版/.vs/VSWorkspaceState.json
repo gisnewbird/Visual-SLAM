@@ -1,7 +1,9 @@
 {
   "ExpandedNodes": [
     "",
+    "\\include",
     "\\src"
   ],
+  "SelectedNode": "\\include\\ORBVocabulary.h",
   "PreviewInSolutionExplorer": false
 }

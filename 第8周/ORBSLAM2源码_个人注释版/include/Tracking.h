@@ -56,12 +56,14 @@ class Tracking
 public:
     Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map* pMap,
              KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);
-
+	// 对输入的图片进行处理，提取特征和立体匹配
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp);
     cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp);
     cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp);
-
+	// Load KeyFrame --by XUKE
+	void LoadKeyFrame(Frame *frame, const double &timestamp);// End --by XUKE
+	// 设置局部地图、设置局部闭环检测、设置视图
     void SetLocalMapper(LocalMapping* pLocalMapper);
     void SetLoopClosing(LoopClosing* pLoopClosing);
     void SetViewer(Viewer* pViewer);
@@ -69,14 +71,18 @@ public:
     // Load new settings
     // The focal lenght should be similar or scale prediction will fail when projecting points
     // TODO: Modify MapPoint::PredictScale to take into account focal lenght
+	// 把焦距考虑进去改变MapPoint的scal
     void ChangeCalibration(const string &strSettingPath);
 
+	// 设置只对摄像头的位姿进行计算
     // Use this function if you have deactivated local mapping and you only want to localize the camera.
     void InformOnlyTracking(const bool &flag);
 
 
 public:
-
+	// The flag to control optimization or not
+	bool LoadingKF;// End --by XUKE
+	//追踪的状态
     // Tracking states
     enum eTrackingState{
         SYSTEM_NOT_READY=-1,
@@ -89,10 +95,13 @@ public:
     eTrackingState mState;
     eTrackingState mLastProcessedState;
 
-    // Input sensor
-    int mSensor;
-
-    // Current Frame
+	// Input sensor
+	int mSensor;
+	int Rtimes = 0, Mtimes = 0;///表示跟踪关键帧和运动模型的帧数
+	int longtime = 0;///表示长时间角度很小
+	int needadd1;///中间变量
+	// Current Frame
+	//当前帧和图片
     Frame mCurrentFrame;
     cv::Mat mImGray;
 
@@ -118,6 +127,7 @@ public:
 protected:
 
     // Main tracking function. It is independent of the input sensor.
+	// 与输入传感器无关的追踪函数
     void Track();
 
     // Map initialization for stereo and RGB-D

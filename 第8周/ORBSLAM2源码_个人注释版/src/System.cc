@@ -21,18 +21,23 @@
 
 
 #include "System.h"
-#include "Converter.h"
+#include "Converter.h"//OpenCV矩阵形式到Eigen库的转换
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
 
 namespace ORB_SLAM2
 {
-
+	//strVocFile：字典；strSettingsFile：相机、ORB等参数
 System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
                const bool bUseViewer):mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false),mbActivateLocalizationMode(false),
         mbDeactivateLocalizationMode(false)
 {
+	// --by XUKE
+	mbSaveMapFlag = false;
+	mbLoadMapFlag = false;// End --by XUKE
+
+
     // Output welcome message
     cout << endl <<
     "ORB-SLAM2 Copyright (C) 2014-2016 Raul Mur-Artal, University of Zaragoza." << endl <<
@@ -51,6 +56,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     //Check settings file
 	//通过fsSettings()传入配置文件路径并只读文件，由isOpened()判断是否存在
+	//关于FileStorage的讲解https://blog.csdn.net/iracer/article/details/51339377
     cv::FileStorage fsSettings(strSettingsFile.c_str(), cv::FileStorage::READ);
     if(!fsSettings.isOpened())
     {
@@ -60,7 +66,8 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
 
     //Load ORB Vocabulary
-	//ORBVocabulary()调用词典的库到变量mpVocabulary中，通过loadFromTextFile(strVocFile)判断是否加载成功，strVocFile是一个string类型指针，代表？？？
+	//ORBVocabulary()调用词典的库DBoW2到变量mpVocabulary中，通过loadFromTextFile(strVocFile)判断是否加载成功，
+	//strVocFile是一个string类型指针，代表字典
     cout << endl << "Loading ORB Vocabulary. This could take a while..." << endl;
 
     mpVocabulary = new ORBVocabulary();
@@ -72,11 +79,13 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         exit(-1);
     }
     cout << "Vocabulary loaded!" << endl << endl;
+	//以上是读取字典的所有参数，包括：编号、父节点、子节点、描述子、树等
+
 
     //Create KeyFrame Database
 	//创建关键帧数据库
     mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
-
+	
     //Create the Map
 	//创建地图
     mpMap = new Map();
@@ -123,6 +132,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     mpLoopCloser->SetTracker(mpTracker);
     mpLoopCloser->SetLocalMapper(mpLocalMapper);
 }
+
 //程序入口
 cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp)
 {
@@ -134,6 +144,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
 
     // Check mode change
     {
+		//构造unique_lock，保持mutex为unlocked状态
         unique_lock<mutex> lock(mMutexMode);
 		//如果是mbActivateLocalizationMode则休眠1000ms直到停止局部建图
         if(mbActivateLocalizationMode)
@@ -143,7 +154,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
             // Wait until Local Mapping has effectively stopped
             while(!mpLocalMapper->isStopped())
             {
-                usleep(1000);
+                usleep(1000);//延迟时间是毫秒级别，用usleep()，是秒级别的，用sleeep()
             }
 
             mpTracker->InformOnlyTracking(true);
@@ -486,6 +497,8 @@ void System::SaveTrajectoryKITTI(const string &filename)
     cout << endl << "trajectory saved!" << endl;
 }
 
+
+
 int System::GetTrackingState()
 {
     unique_lock<mutex> lock(mMutexState);
@@ -503,5 +516,129 @@ vector<cv::KeyPoint> System::GetTrackedKeyPointsUn()
     unique_lock<mutex> lock(mMutexState);
     return mTrackedKeyPointsUn;
 }
+
+///////////////////////////////////////////////////////////////////////////////
+void System::CheckSaveLoad(const double &timestamp)
+{
+	// Check Save & Load flag --by XUKE
+	{
+		unique_lock<mutex> lock(mMutexSave);
+		if (mbSaveMapFlag)
+		{
+			mpLocalMapper->RequestStop();
+
+			// Wait until Local Mapping has effectively stopped
+			while (!mpLocalMapper->isStopped())
+			{
+				usleep(1000);
+			}
+
+			SaveMap("MapData.xml");
+
+			mbSaveMapFlag = false;
+		}
+		else if (mbLoadMapFlag)
+		{
+			std::vector<Frame*> vpKFs;
+			LoadMap("MapData.xml", vpKFs);
+			mbLoadMapFlag = false;
+
+			mpLocalMapper->Release();
+			mpTracker->LoadingKF = true;
+			for (std::vector<Frame*>::iterator vf = vpKFs.begin(); vf != vpKFs.end(); ++vf)
+			{
+				//cout<<" i="<< vf-vpKFs.begin() <<endl;
+				mpTracker->LoadKeyFrame(*vf, timestamp);
+			}
+			mpTracker->LoadingKF = false;
+		}
+	}// End --by XUKE
+}
+//////////////////////////////////////////////////////////////////////////////////////////
+
+// Add Save & Load functions --by XUKE
+void System::ActivateSaveMap()
+{
+	unique_lock<mutex> lock(mMutexSave);
+	mbSaveMapFlag = true;
+}
+
+void System::ActivateLoadMap()
+{
+	unique_lock<mutex> lock(mMutexSave);
+	mbLoadMapFlag = true;
+}
+
+void System::SaveMap(const string &filename)
+{
+	cout << endl << "Saving Map Data to " << filename << " ..." << endl;
+
+	vector<KeyFrame*> vpKFs = mpMap->GetAllKeyFrames();
+
+	sort(vpKFs.begin(), vpKFs.end(), KeyFrame::lId);
+
+	FileStorage fs(filename, FileStorage::WRITE);
+
+	fs << "KeyFrames" << "[";
+	for (size_t i = 0; i < vpKFs.size(); i++)
+	{
+		KeyFrame* pKF = vpKFs[i];
+		Frame frame;
+
+		pKF->ConverterTo(frame);
+		//sprintf(ckfName, "KeyFrame%08d", (int)pKF->mnId);
+		fs << "{" << "Frame" << frame << "}";
+	}
+	fs << "]";
+
+	fs.release();
+	cout << endl << "Map Data saved! KeyFrame number:" << vpKFs.size() << endl;
+}
+
+void System::LoadMap(const string &filename, std::vector<Frame*> &vpKFs)
+{
+	cout << endl << "Loading Map Data from " << filename << " ..." << endl;
+
+	FileStorage fs(filename, FileStorage::READ);
+
+	FileNode frames = fs["KeyFrames"];
+	FileNodeIterator it = frames.begin(), it_end = frames.end();
+	int idx = 0;
+
+	vpKFs.clear();
+
+	for (; it != it_end; ++it, idx++)
+	{
+		Frame* frame = new Frame();
+		(*it)["Frame"] >> *frame;
+
+		frame->creatFrame(mpVocabulary);
+		frame->ComputeBoW();
+
+		vpKFs.push_back(frame);
+		std::cout << "frameID:" << frame->mnId << std::endl << frame->mTcw << std::endl;
+	}
+
+	fs.release();
+
+	//cout << endl << "Map Data Loaded! KeyFrame number:" << idx << endl;
+}
+// Lock
+void System::ActivateLock()
+{
+	mbLockFlag = true;
+	mpTracker->LoadingKF = true;
+}
+void System::ActivateUnLock()
+{
+	mbLockFlag = false;
+	mpTracker->LoadingKF = false;
+}
+bool System::IsLocked()
+{
+	return mbLockFlag;
+}
+// End --by XUKE
+
 
 } //namespace ORB_SLAM

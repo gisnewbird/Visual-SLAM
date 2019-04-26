@@ -61,7 +61,7 @@ public:
     // Initialize the SLAM system. It launches the Local Mapping, Loop Closing and Viewer threads.
     System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true);
 
-    // Proccess the given stereo frame. Images must be synchronized and rectified.
+    // Proccess the given stereo frame. Images must be synchronized and rectified.双目情况
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
     // Returns the camera pose (empty if tracking fails).
     cv::Mat TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp);
@@ -72,14 +72,17 @@ public:
     // Returns the camera pose (empty if tracking fails).
     cv::Mat TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp);
 
-    // Proccess the given monocular frame
+    // Proccess the given monocular frame 单目情况
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
     // Returns the camera pose (empty if tracking fails).
     cv::Mat TrackMonocular(const cv::Mat &im, const double &timestamp);
 
     // This stops local mapping thread (map building) and performs only camera tracking.
+	// 暂停局部地图的构建，只进行跟踪
     void ActivateLocalizationMode();
     // This resumes local mapping thread and performs SLAM again.
+	// 重新开始局部地图构建线程
+	// 使用mutex信号量的多线程
     void DeactivateLocalizationMode();
 
     // Returns true if there have been a big map change (loop closure, global BA)
@@ -87,11 +90,13 @@ public:
     bool MapChanged();
 
     // Reset the system (clear map)
+	//复位地图
     void Reset();
 
     // All threads will be requested to finish.
     // It waits until all threads have finished.
     // This function must be called before saving the trajectory.
+	//必须在保存轨迹之前shutdown
     void Shutdown();
 
     // Save camera trajectory in the TUM RGB-D dataset format.
@@ -121,6 +126,16 @@ public:
     int GetTrackingState();
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
+	// TODO: Save/Load functions
+	// Add Save & Load functions --by XUKE
+	void ActivateSaveMap();
+	void ActivateLoadMap();
+	void SaveMap(const string &filename);
+	void LoadMap(const string &filename, std::vector<Frame*> &vpKFs);
+	void ActivateLock();
+	void ActivateUnLock();
+	bool IsLocked();
+	void CheckSaveLoad(const double &timestamp);// End --by XUKE
 
 private:
 
@@ -139,16 +154,20 @@ private:
     // Tracker. It receives a frame and computes the associated camera pose.
     // It also decides when to insert a new keyframe, create some new MapPoints and
     // performs relocalization if tracking fails.
-    Tracking* mpTracker;
+    // 追踪器。接受一帧并且计算相机pose， 决定何时插入KF，MapPoints
+	Tracking* mpTracker;
 
     // Local Mapper. It manages the local map and performs local bundle adjustment.
+	// 构建局部地图，进行local BA
     LocalMapping* mpLocalMapper;
 
     // Loop Closer. It searches loops with every new keyframe. If there is a loop it performs
     // a pose graph optimization and full bundle adjustment (in a new thread) afterwards.
+	// 闭环，每插入一个KF就检查闭环和进行global BA
     LoopClosing* mpLoopCloser;
 
     // The viewer draws the map and the current camera pose. It uses Pangolin.
+	// 使用Pangolin库查看地图和相机pose
     Viewer* mpViewer;
 
     FrameDrawer* mpFrameDrawer;
@@ -156,12 +175,14 @@ private:
 
     // System threads: Local Mapping, Loop Closing, Viewer.
     // The Tracking thread "lives" in the main execution thread that creates the System object.
+	// 追踪这个线程在main函数，这里另外开了local map、local 闭环、显示地图
     std::thread* mptLocalMapping;
     std::thread* mptLoopClosing;
     std::thread* mptViewer;
 
     // Reset flag
     std::mutex mMutexReset;
+	std::mutex mMutexSave;
     bool mbReset;
 
     // Change mode flags
@@ -174,6 +195,12 @@ private:
     std::vector<MapPoint*> mTrackedMapPoints;
     std::vector<cv::KeyPoint> mTrackedKeyPointsUn;
     std::mutex mMutexState;
+	// Add Save & Load flags--by XUKE
+    //std::mutex mMutexSave;
+	bool mbSaveMapFlag;
+	bool mbLoadMapFlag;
+	// Lock
+	bool mbLockFlag;// End --by XUKE
 };
 
 }// namespace ORB_SLAM
