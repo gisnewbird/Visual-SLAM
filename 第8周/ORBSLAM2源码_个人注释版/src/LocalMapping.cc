@@ -81,6 +81,7 @@ void LocalMapping::Run()
                     Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
 
                 // Check redundant local Keyframes
+				// 检测多余的KF
                 KeyFrameCulling();
             }
 
