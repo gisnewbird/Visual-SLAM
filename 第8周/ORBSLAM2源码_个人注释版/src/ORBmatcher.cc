@@ -1327,6 +1327,12 @@ int ORBmatcher::SearchBySim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint*> &
     return nFound;
 }
 
+// 根据速度模型可以估计当前帧的Tcw，将上一帧的MapPoints投影到当前帧，
+// 使用函数 GetFeaturesInArea() 搜索候选特征点，
+// 搜索范围（半径，windowSize），根据th和与特征点在上一帧时的尺度nLastOctave共同确定，搜索使用的最大最小层，
+// 根据前进和后退模型（仅对双目和RGBD有效）设定
+//---------------------
+
 int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, const float th, const bool bMono)
 {
     int nmatches = 0;
@@ -1359,6 +1365,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
             if(!LastFrame.mvbOutlier[i])
             {
                 // Project
+                // 投影
                 cv::Mat x3Dw = pMP->GetWorldPos();
                 cv::Mat x3Dc = Rcw*x3Dw+tcw;
 
@@ -1380,10 +1387,14 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
                 int nLastOctave = LastFrame.mvKeys[i].octave;
 
                 // Search in a window. Size depends on scale
+                // 在窗口中搜索，窗口大小根据尺度改变，图像越小，尺度越大
                 float radius = th*CurrentFrame.mvScaleFactors[nLastOctave];
 
                 vector<size_t> vIndices2;
-
+                // 以下可以这么理解，例如一个有一定面积的圆点，在某个尺度n下它是一个特征点
+                // 当前进时，圆点的面积增大，在某个尺度m下它是一个特征点，
+                // 由于面积增大，则需要在更高的尺度下才能检测出来
+                // 因此m>=n，对应前进的情况，nCurOctave>=nLastOctave。后退的情况可以类推
                 if(bForward)
                     vIndices2 = CurrentFrame.GetFeaturesInArea(u,v, radius, nLastOctave);
                 else if(bBackward)
@@ -1408,6 +1419,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
 
                     if(CurrentFrame.mvuRight[i2]>0)
                     {
+                        // 双目和RGBD的情况，需要保证右图的点也在搜索半径以内
                         const float ur = u - CurrentFrame.mbf*invzc;
                         const float er = fabs(ur - CurrentFrame.mvuRight[i2]);
                         if(er>radius)
@@ -1447,6 +1459,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
     }
 
     //Apply rotation consistency
+    //旋转一致性
     if(mbCheckOrientation)
     {
         int ind1=-1;
