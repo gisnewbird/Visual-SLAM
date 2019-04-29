@@ -198,7 +198,7 @@ bool LoopClosing::DetectLoop()
                 int nCurrentConsistency = nPreviousConsistency + 1;
                 if(!vbConsistentGroup[iG])//这里作者的本意可能是[i]而不是[iG]
                 {
-					// 将该”子候选组“的该KF编号加入到”当前连续组“
+					// 将该"子候选组"的该KF编号加入到"当前连续组"
                     ConsistentGroup cg = make_pair(spCandidateGroup,nCurrentConsistency);
                     vCurrentConsistentGroups.push_back(cg);
                     vbConsistentGroup[iG]=true; //this avoid to include the same group more than once
@@ -248,7 +248,7 @@ bool LoopClosing::DetectLoop()
 bool LoopClosing::ComputeSim3()
 {
     // For each consistent loop candidate we try to compute a Sim3
-
+	// 上一步输出的mvpEnoughConsistentCandidates，放入Sim3求解器
     const int nInitialCandidates = mvpEnoughConsistentCandidates.size();
 
     // We compute first ORB matches for each candidate
@@ -256,7 +256,7 @@ bool LoopClosing::ComputeSim3()
     ORBmatcher matcher(0.75,true);
 
     vector<Sim3Solver*> vpSim3Solvers;
-    vpSim3Solvers.resize(nInitialCandidates);
+    vpSim3Solvers.resize(nInitialCandidates);// 每个候选帧都有一个vpSim3Solvers
 
     vector<vector<MapPoint*> > vvpMapPointMatches;
     vvpMapPointMatches.resize(nInitialCandidates);
@@ -268,19 +268,26 @@ bool LoopClosing::ComputeSim3()
 
     for(int i=0; i<nInitialCandidates; i++)
     {
+		// 步骤1：从筛选的闭环候选帧mvpEnoughConsistentCandidates中取出一帧pKF
         KeyFrame* pKF = mvpEnoughConsistentCandidates[i];
 
         // avoid that local mapping erase it while it is being processed in this thread
+		// 防止在LocalMapping中KeyFrameCulling函数将此关键帧作为冗余帧剔除
         pKF->SetNotErase();
 
         if(pKF->isBad())
         {
+			// 上一步操作，标记的不好的KF直接忽略掉
             vbDiscarded[i] = true;
             continue;
         }
 
+		// SearchByBoW，结果放在vvpMapPointMatches
+		// 步骤2：将当前帧mpCurrentKF与闭环候选关键帧pKF匹配
+		// 通过bow加速得到mpCurrentKF与pKF之间的匹配特征点，vvpMapPointMatches是匹配特征点对应的MapPoints
         int nmatches = matcher.SearchByBoW(mpCurrentKF,pKF,vvpMapPointMatches[i]);
-
+		
+		// 匹配的特征点数太少，该候选帧剔除
         if(nmatches<20)
         {
             vbDiscarded[i] = true;
@@ -288,18 +295,22 @@ bool LoopClosing::ComputeSim3()
         }
         else
         {
+			// 构造Sim3求解器
+			// 如果mbFixScale为true，则是6DoFf优化（双目 RGBD），如果是false，则是7DoF优化（单目）
             Sim3Solver* pSolver = new Sim3Solver(mpCurrentKF,pKF,vvpMapPointMatches[i],mbFixScale);
             pSolver->SetRansacParameters(0.99,20,300);
             vpSim3Solvers[i] = pSolver;
         }
-
+		// 参与Sim3计算的候选关键帧数+1
         nCandidates++;
     }
 
-    bool bMatch = false;
+    bool bMatch = false;// 用于标记是否有一个候选帧通过Sim3的求解与优化
 
     // Perform alternatively RANSAC iterations for each candidate
     // until one is succesful or all fail
+	// 一直循环所有的候选帧，每个候选帧迭代5次，如果5次迭代后得不到结果，就换下一个候选帧
+	// 直到有一个候选帧首次迭代成功bMatch为true，或者某个候选帧总的迭代次数超过限制，直接将它剔除
     while(nCandidates>0 && !bMatch)
     {
         for(int i=0; i<nInitialCandidates; i++)
@@ -312,12 +323,16 @@ bool LoopClosing::ComputeSim3()
             // Perform 5 Ransac Iterations
             vector<bool> vbInliers;
             int nInliers;
-            bool bNoMore;
+            bool bNoMore;// 局部变量，在pSolver->iterate(...)内进行初始化
 
+			// 步骤3：对步骤2中有较好的匹配的关键帧求取Sim3变换
             Sim3Solver* pSolver = vpSim3Solvers[i];
+			// 最多迭代5次，返回的Scm是候选帧pKF到当前帧mpCurrentKF的Sim3变换（T12）
             cv::Mat Scm  = pSolver->iterate(5,bNoMore,vbInliers,nInliers);
 
             // If Ransac reachs max. iterations discard keyframe
+			// 经过n次循环，每次迭代5次，总共迭代 n*5 次
+			// 总迭代次数达到最大限制还没有求出合格的Sim3变换，该候选帧剔除
             if(bNoMore)
             {
                 vbDiscarded[i]=true;
@@ -330,44 +345,63 @@ bool LoopClosing::ComputeSim3()
                 vector<MapPoint*> vpMapPointMatches(vvpMapPointMatches[i].size(), static_cast<MapPoint*>(NULL));
                 for(size_t j=0, jend=vbInliers.size(); j<jend; j++)
                 {
+					// 保存inlier的MapPoint
                     if(vbInliers[j])
                        vpMapPointMatches[j]=vvpMapPointMatches[i][j];
                 }
 
-                cv::Mat R = pSolver->GetEstimatedRotation();
-                cv::Mat t = pSolver->GetEstimatedTranslation();
-                const float s = pSolver->GetEstimatedScale();
-                matcher.SearchBySim3(mpCurrentKF,pKF,vpMapPointMatches,s,R,t,7.5);
+				// 步骤4：通过步骤3求取的Sim3变换引导关键帧匹配弥补步骤2中的漏匹配
+				// [sR t;0 1]
+				cv::Mat R = pSolver->GetEstimatedRotation();// 候选帧pKF到当前帧mpCurrentKF的R（R12）
+				cv::Mat t = pSolver->GetEstimatedTranslation();// 候选帧pKF到当前帧mpCurrentKF的t（t12），当前帧坐标系下，方向由pKF指向当前帧
+				const float s = pSolver->GetEstimatedScale();// 候选帧pKF到当前帧mpCurrentKF的变换尺度s（s12）
+				// 查找更多的匹配（成功的闭环匹配需要满足足够多的匹配特征点数，之前使用SearchByBoW进行特征点匹配时会有漏匹配）
+				// 通过Sim3变换，确定pKF1的特征点在pKF2中的大致区域，同理，确定pKF2的特征点在pKF1中的大致区域
+				// 在该区域内通过描述子进行匹配捕获pKF1和pKF2之前漏匹配的特征点，更新匹配vpMapPointMatches
+				matcher.SearchBySim3(mpCurrentKF, pKF, vpMapPointMatches, s, R, t, 7.5);
 
-                g2o::Sim3 gScm(Converter::toMatrix3d(R),Converter::toVector3d(t),s);
-                const int nInliers = Optimizer::OptimizeSim3(mpCurrentKF, pKF, vpMapPointMatches, gScm, 10, mbFixScale);
+				// 步骤5：Sim3优化，只要有一个候选帧通过Sim3的求解与优化，就跳出停止对其它候选帧的判断
+				// OpenCV的Mat矩阵转成Eigen的Matrix类型
+				g2o::Sim3 gScm(Converter::toMatrix3d(R), Converter::toVector3d(t), s);
+				// 如果mbFixScale为true，则是6DoFf优化（双目 RGBD），如果是false，则是7DoF优化（单目）
+				// 优化mpCurrentKF与pKF对应的MapPoints间的Sim3，得到优化后的量gScm
+				const int nInliers = Optimizer::OptimizeSim3(mpCurrentKF, pKF, vpMapPointMatches, gScm, 10, mbFixScale);// 卡方chi2检验阈值
 
                 // If optimization is succesful stop ransacs and continue
-                if(nInliers>=20)
-                {
-                    bMatch = true;
-                    mpMatchedKF = pKF;
-                    g2o::Sim3 gSmw(Converter::toMatrix3d(pKF->GetRotation()),Converter::toVector3d(pKF->GetTranslation()),1.0);
-                    mg2oScw = gScm*gSmw;
-                    mScw = Converter::toCvMat(mg2oScw);
+				if (nInliers >= 20)
+				{
+					bMatch = true;
+					// mpMatchedKF就是最终闭环检测出来与当前帧形成闭环的关键帧
+					mpMatchedKF = pKF;
+					// 得到从世界坐标系到该候选帧的Sim3变换，Scale=1
+					g2o::Sim3 gSmw(Converter::toMatrix3d(pKF->GetRotation()), Converter::toVector3d(pKF->GetTranslation()), 1.0);
+					// 得到g2o优化后从世界坐标系到当前帧的Sim3变换
+					mg2oScw = gScm * gSmw;
+					mScw = Converter::toCvMat(mg2oScw);
 
-                    mvpCurrentMatchedPoints = vpMapPointMatches;
-                    break;
-                }
+					mvpCurrentMatchedPoints = vpMapPointMatches;
+					break;// 只要有一个候选帧通过Sim3的求解与优化，就跳出停止对其它候选帧的判断
+				}
             }
         }
     }
-
+	// 没有一个闭环匹配候选帧通过Sim3的求解与优化
     if(!bMatch)
     {
+		// 清空mvpEnoughConsistentCandidates
         for(int i=0; i<nInitialCandidates; i++)
              mvpEnoughConsistentCandidates[i]->SetErase();
         mpCurrentKF->SetErase();
         return false;
     }
 
-    // Retrieve MapPoints seen in Loop Keyframe and neighbors
+	// Retrieve MapPoints seen in Loop Keyframe and neighbors
+	// 步骤6：取出闭环匹配上关键帧的相连关键帧，将MapPoints放入mvpLoopMapPoints
+	// 注意是匹配上的那个关键帧：mpMatchedKF
+	// 将mpMatchedKF相连的关键帧全部取出来放入vpLoopConnectedKFs
+	// 将vpLoopConnectedKFs的MapPoints取出来放入mvpLoopMapPoints
     vector<KeyFrame*> vpLoopConnectedKFs = mpMatchedKF->GetVectorCovisibleKeyFrames();
+	// 包含闭环匹配KF本身
     vpLoopConnectedKFs.push_back(mpMatchedKF);
     mvpLoopMapPoints.clear();
     for(vector<KeyFrame*>::iterator vit=vpLoopConnectedKFs.begin(); vit!=vpLoopConnectedKFs.end(); vit++)
@@ -382,6 +416,7 @@ bool LoopClosing::ComputeSim3()
                 if(!pMP->isBad() && pMP->mnLoopPointForKF!=mpCurrentKF->mnId)
                 {
                     mvpLoopMapPoints.push_back(pMP);
+					// 标记该MapPoint被mpCurrentKF闭环时观测到并添加，避免重复添加
                     pMP->mnLoopPointForKF=mpCurrentKF->mnId;
                 }
             }
@@ -389,16 +424,22 @@ bool LoopClosing::ComputeSim3()
     }
 
     // Find more matches projecting with the computed Sim3
+	// 步骤7：将闭环匹配上关键帧以及相连关键帧的MapPoints投影到当前关键帧进行投影匹配
+	// 根据投影查找更多的匹配（成功的闭环匹配需要满足足够多的匹配特征点数）
+	// 根据Sim3变换，将每个mvpLoopMapPoints投影到mpCurrentKF上，并根据尺度确定一个搜索区域，
+	// 根据该MapPoint的描述子与该区域内的特征点进行匹配，如果匹配误差小于TH_LOW即匹配成功，更新mvpCurrentMatchedPoints
+	// mvpCurrentMatchedPoints将用于SearchAndFuse中检测当前帧MapPoints与匹配的MapPoints是否存在冲突
     matcher.SearchByProjection(mpCurrentKF, mScw, mvpLoopMapPoints, mvpCurrentMatchedPoints,10);
 
     // If enough matches accept Loop
+	// 步骤8：判断当前帧与检测出的所有闭环关键帧是否有足够多的MapPoints匹配
     int nTotalMatches = 0;
     for(size_t i=0; i<mvpCurrentMatchedPoints.size(); i++)
     {
         if(mvpCurrentMatchedPoints[i])
             nTotalMatches++;
     }
-
+	// 步骤9：清空mvpEnoughConsistentCandidates
     if(nTotalMatches>=40)
     {
         for(int i=0; i<nInitialCandidates; i++)
@@ -416,177 +457,187 @@ bool LoopClosing::ComputeSim3()
 
 }
 
+/**
+ * @brief 闭环
+ *
+ * 1. 通过求解的Sim3以及相对姿态关系，调整与当前帧相连的关键帧位姿以及这些关键帧观测到的MapPoints的位置（相连关键帧---当前帧）
+ * 2. 将闭环帧以及闭环帧相连的关键帧的MapPoints和与当前帧相连的关键帧的点进行匹配（相连关键帧+当前帧---闭环帧+相连关键帧）
+ * 3. 通过MapPoints的匹配关系更新这些帧之间的连接关系，即更新covisibility graph
+ * 4. 对Essential Graph（Pose Graph）进行优化，MapPoints的位置则根据优化后的位姿做相对应的调整
+ * 5. 创建线程进行全局Bundle Adjustment
+ */
 void LoopClosing::CorrectLoop()
 {
-    cout << "Loop detected!" << endl;
+	cout << "Loop detected!" << endl;
 
-    // Send a stop signal to Local Mapping
-    // Avoid new keyframes are inserted while correcting the loop
-    // 步骤0：请求局部地图停止，防止局部地图线程中InsertKeyFrame函数插入新的关键帧
+	// Send a stop signal to Local Mapping
+	// Avoid new keyframes are inserted while correcting the loop
+	// 步骤0：请求局部地图停止，防止局部地图线程中InsertKeyFrame函数插入新的关键帧
 	mpLocalMapper->RequestStop();
 
-    // If a Global Bundle Adjustment is running, abort it
-    if(isRunningGBA())
-    {
+	// If a Global Bundle Adjustment is running, abort it
+	if (isRunningGBA())
+	{
 		// 这个标志位仅用于控制输出提示，可忽略
-        unique_lock<mutex> lock(mMutexGBA);
-        mbStopGBA = true;
+		unique_lock<mutex> lock(mMutexGBA);
+		mbStopGBA = true;
 
-        mnFullBAIdx++;
+		mnFullBAIdx++;
 
-        if(mpThreadGBA)
-        {
-            mpThreadGBA->detach();
-            delete mpThreadGBA;
-        }
-    }
+		if (mpThreadGBA)
+		{
+			mpThreadGBA->detach();
+			delete mpThreadGBA;
+		}
+	}
 
-    // Wait until Local Mapping has effectively stopped
-    while(!mpLocalMapper->isStopped())
-    {
-        usleep(1000);
-    }
+	// Wait until Local Mapping has effectively stopped
+	while (!mpLocalMapper->isStopped())
+	{
+		//usleep(1000);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 
-    // Ensure current keyframe is updated
+	// Ensure current keyframe is updated
 	// 步骤1：根据共视关系更新当前帧与其它关键帧之间的连接
-    mpCurrentKF->UpdateConnections();
+	mpCurrentKF->UpdateConnections();
 
-    // Retrive keyframes connected to the current keyframe and compute corrected Sim3 pose by propagation
+	// Retrive keyframes connected to the current keyframe and compute corrected Sim3 pose by propagation
 	// 步骤2：通过位姿传播，得到Sim3优化后，与当前帧相连的关键帧的位姿，以及它们的MapPoints
 	// 当前帧与世界坐标系之间的Sim变换在ComputeSim3函数中已经确定并优化，
 	// 通过相对位姿关系，可以确定这些相连的关键帧与世界坐标系之间的Sim3变换
 
 	// 取出与当前帧相连的关键帧，包括当前关键帧
 	mvpCurrentConnectedKFs = mpCurrentKF->GetVectorCovisibleKeyFrames();
-    mvpCurrentConnectedKFs.push_back(mpCurrentKF);
-	
-    KeyFrameAndPose CorrectedSim3, NonCorrectedSim3;
+	mvpCurrentConnectedKFs.push_back(mpCurrentKF);
+
+	KeyFrameAndPose CorrectedSim3, NonCorrectedSim3;
 	// 先将mpCurrentKF的Sim3变换存入，固定不动
-    CorrectedSim3[mpCurrentKF]=mg2oScw;
-    cv::Mat Twc = mpCurrentKF->GetPoseInverse();
+	CorrectedSim3[mpCurrentKF] = mg2oScw;
+	cv::Mat Twc = mpCurrentKF->GetPoseInverse();
 
 
-    {
-        // Get Map Mutex
-        unique_lock<mutex> lock(mpMap->mMutexMapUpdate);
+	{
+		// Get Map Mutex
+		unique_lock<mutex> lock(mpMap->mMutexMapUpdate);
 
 		// 步骤2.1：通过位姿传播，得到Sim3调整后其它与当前帧相连关键帧的位姿（只是得到，还没有修正）
-        for(vector<KeyFrame*>::iterator vit=mvpCurrentConnectedKFs.begin(), vend=mvpCurrentConnectedKFs.end(); vit!=vend; vit++)
-        {
-            KeyFrame* pKFi = *vit;
+		for (vector<KeyFrame*>::iterator vit = mvpCurrentConnectedKFs.begin(), vend = mvpCurrentConnectedKFs.end(); vit != vend; vit++)
+		{
+			KeyFrame* pKFi = *vit;
 
-            cv::Mat Tiw = pKFi->GetPose();
+			cv::Mat Tiw = pKFi->GetPose();
 
 			// currentKF在前面已经添加
-            if(pKFi!=mpCurrentKF)
-            {
+			if (pKFi != mpCurrentKF)
+			{
 				// 得到当前帧到pKFi帧的相对变换
-                cv::Mat Tic = Tiw*Twc;
-                cv::Mat Ric = Tic.rowRange(0,3).colRange(0,3);
-                cv::Mat tic = Tic.rowRange(0,3).col(3);
-                g2o::Sim3 g2oSic(Converter::toMatrix3d(Ric),Converter::toVector3d(tic),1.0);
+				cv::Mat Tic = Tiw * Twc;
+				cv::Mat Ric = Tic.rowRange(0, 3).colRange(0, 3);
+				cv::Mat tic = Tic.rowRange(0, 3).col(3);
+				g2o::Sim3 g2oSic(Converter::toMatrix3d(Ric), Converter::toVector3d(tic), 1.0);
 				// 当前帧的位姿固定不动，其它的关键帧根据相对关系得到Sim3调整的位姿
-                g2o::Sim3 g2oCorrectedSiw = g2oSic*mg2oScw;
-                //Pose corrected with the Sim3 of the loop closure
+				g2o::Sim3 g2oCorrectedSiw = g2oSic * mg2oScw;
+				// Pose corrected with the Sim3 of the loop closure
 				// 得到闭环g2o优化后各个关键帧的位姿
-                CorrectedSim3[pKFi]=g2oCorrectedSiw;
-            }
+				CorrectedSim3[pKFi] = g2oCorrectedSiw;
+			}
 
-            cv::Mat Riw = Tiw.rowRange(0,3).colRange(0,3);
-            cv::Mat tiw = Tiw.rowRange(0,3).col(3);
-            g2o::Sim3 g2oSiw(Converter::toMatrix3d(Riw),Converter::toVector3d(tiw),1.0);
-            //Pose without correction
+			cv::Mat Riw = Tiw.rowRange(0, 3).colRange(0, 3);
+			cv::Mat tiw = Tiw.rowRange(0, 3).col(3);
+			g2o::Sim3 g2oSiw(Converter::toMatrix3d(Riw), Converter::toVector3d(tiw), 1.0);
+			// Pose without correction
 			// 当前帧相连关键帧，没有进行闭环g2o优化的位姿
-            NonCorrectedSim3[pKFi]=g2oSiw;
-        }
+			NonCorrectedSim3[pKFi] = g2oSiw;
+		}
 
-        // Correct all MapPoints obsrved by current keyframe and neighbors, so that they align with the other side of the loop
+		// Correct all MapPoints obsrved by current keyframe and neighbors, so that they align with the other side of the loop
 		// 步骤2.2：步骤2.1得到调整相连帧位姿后，修正这些关键帧的MapPoints
-		for(KeyFrameAndPose::iterator mit=CorrectedSim3.begin(), mend=CorrectedSim3.end(); mit!=mend; mit++)
-        {
-            KeyFrame* pKFi = mit->first;
-            g2o::Sim3 g2oCorrectedSiw = mit->second;
-            g2o::Sim3 g2oCorrectedSwi = g2oCorrectedSiw.inverse();
+		for (KeyFrameAndPose::iterator mit = CorrectedSim3.begin(), mend = CorrectedSim3.end(); mit != mend; mit++)
+		{
+			KeyFrame* pKFi = mit->first;
+			g2o::Sim3 g2oCorrectedSiw = mit->second;
+			g2o::Sim3 g2oCorrectedSwi = g2oCorrectedSiw.inverse();
 
-            g2o::Sim3 g2oSiw =NonCorrectedSim3[pKFi];
+			g2o::Sim3 g2oSiw = NonCorrectedSim3[pKFi];
 
-            vector<MapPoint*> vpMPsi = pKFi->GetMapPointMatches();
-            for(size_t iMP=0, endMPi = vpMPsi.size(); iMP<endMPi; iMP++)
-            {
-                MapPoint* pMPi = vpMPsi[iMP];
-                if(!pMPi)
-                    continue;
-                if(pMPi->isBad())
-                    continue;
-                if(pMPi->mnCorrectedByKF==mpCurrentKF->mnId)
-                    continue;
+			vector<MapPoint*> vpMPsi = pKFi->GetMapPointMatches();
+			for (size_t iMP = 0, endMPi = vpMPsi.size(); iMP < endMPi; iMP++)
+			{
+				MapPoint* pMPi = vpMPsi[iMP];
+				if (!pMPi)
+					continue;
+				if (pMPi->isBad())
+					continue;
+				if (pMPi->mnCorrectedByKF == mpCurrentKF->mnId) // 防止重复修正
+					continue;
 
-                // Project with non-corrected pose and project back with corrected pose
+				// Project with non-corrected pose and project back with corrected pose
 				// 将该未校正的eigP3Dw先从世界坐标系映射到未校正的pKFi相机坐标系，然后再反映射到校正后的世界坐标系下
-                cv::Mat P3Dw = pMPi->GetWorldPos();
-                Eigen::Matrix<double,3,1> eigP3Dw = Converter::toVector3d(P3Dw);
-                Eigen::Matrix<double,3,1> eigCorrectedP3Dw = g2oCorrectedSwi.map(g2oSiw.map(eigP3Dw));
+				cv::Mat P3Dw = pMPi->GetWorldPos();
+				Eigen::Matrix<double, 3, 1> eigP3Dw = Converter::toVector3d(P3Dw);
+				Eigen::Matrix<double, 3, 1> eigCorrectedP3Dw = g2oCorrectedSwi.map(g2oSiw.map(eigP3Dw));
 
-                cv::Mat cvCorrectedP3Dw = Converter::toCvMat(eigCorrectedP3Dw);
-                pMPi->SetWorldPos(cvCorrectedP3Dw);
-                pMPi->mnCorrectedByKF = mpCurrentKF->mnId;
-                pMPi->mnCorrectedReference = pKFi->mnId;
-                pMPi->UpdateNormalAndDepth();
-            }
+				cv::Mat cvCorrectedP3Dw = Converter::toCvMat(eigCorrectedP3Dw);
+				pMPi->SetWorldPos(cvCorrectedP3Dw);
+				pMPi->mnCorrectedByKF = mpCurrentKF->mnId;
+				pMPi->mnCorrectedReference = pKFi->mnId;
+				pMPi->UpdateNormalAndDepth();
+			}
 
-            // Update keyframe pose with corrected Sim3. First transform Sim3 to SE3 (scale translation)
+			// Update keyframe pose with corrected Sim3. First transform Sim3 to SE3 (scale translation)
 			// 步骤2.3：将Sim3转换为SE3，根据更新的Sim3，更新关键帧的位姿
 			Eigen::Matrix3d eigR = g2oCorrectedSiw.rotation().toRotationMatrix();
-            Eigen::Vector3d eigt = g2oCorrectedSiw.translation();
-            double s = g2oCorrectedSiw.scale();
+			Eigen::Vector3d eigt = g2oCorrectedSiw.translation();
+			double s = g2oCorrectedSiw.scale();
 
-            eigt *=(1./s); //[R t/s;0 1]
+			eigt *= (1. / s); //[R t/s;0 1]
 
-            cv::Mat correctedTiw = Converter::toCvSE3(eigR,eigt);
+			cv::Mat correctedTiw = Converter::toCvSE3(eigR, eigt);
 
-            pKFi->SetPose(correctedTiw);
+			pKFi->SetPose(correctedTiw);
 
-            // Make sure connections are updated
+			// Make sure connections are updated
 			// 步骤2.4：根据共视关系更新当前帧与其它关键帧之间的连接
-            pKFi->UpdateConnections();
-        }
+			pKFi->UpdateConnections();
+		}
 
-        // Start Loop Fusion
-        // Update matched map points and replace if duplicated
+		// Start Loop Fusion
+		// Update matched map points and replace if duplicated
 		// 步骤3：检查当前帧的MapPoints与闭环匹配帧的MapPoints是否存在冲突，对冲突的MapPoints进行替换或填补
-        for(size_t i=0; i<mvpCurrentMatchedPoints.size(); i++)
-        {
-            if(mvpCurrentMatchedPoints[i])
-            {
-                MapPoint* pLoopMP = mvpCurrentMatchedPoints[i];
-                MapPoint* pCurMP = mpCurrentKF->GetMapPoint(i);
-                if(pCurMP)// 如果有重复的MapPoint（当前帧和匹配帧各有一个），则用匹配帧的代替现有的
-                    pCurMP->Replace(pLoopMP);
-                else// 如果当前帧没有该MapPoint，则直接添加
-                {
-                    mpCurrentKF->AddMapPoint(pLoopMP,i);
-                    pLoopMP->AddObservation(mpCurrentKF,i);
-                    pLoopMP->ComputeDistinctiveDescriptors();
-                }
-            }
-        }
+		for (size_t i = 0; i < mvpCurrentMatchedPoints.size(); i++)
+		{
+			if (mvpCurrentMatchedPoints[i])
+			{
+				MapPoint* pLoopMP = mvpCurrentMatchedPoints[i];
+				MapPoint* pCurMP = mpCurrentKF->GetMapPoint(i);
+				if (pCurMP)// 如果有重复的MapPoint（当前帧和匹配帧各有一个），则用匹配帧的代替现有的
+					pCurMP->Replace(pLoopMP);
+				else// 如果当前帧没有该MapPoint，则直接添加
+				{
+					mpCurrentKF->AddMapPoint(pLoopMP, i);
+					pLoopMP->AddObservation(mpCurrentKF, i);
+					pLoopMP->ComputeDistinctiveDescriptors();
+				}
+			}
+		}
 
-    }
+	}
 
-    // Project MapPoints observed in the neighborhood of the loop keyframe
-    // into the current keyframe and neighbors using corrected poses.
-    // Fuse duplications.
+	// Project MapPoints observed in the neighborhood of the loop keyframe
+	// into the current keyframe and neighbors using corrected poses.
+	// Fuse duplications.
 	// 步骤4：通过将闭环时相连关键帧的mvpLoopMapPoints投影到这些关键帧中，进行MapPoints检查与替换
-    SearchAndFuse(CorrectedSim3);
+	SearchAndFuse(CorrectedSim3);
 
 
-    // After the MapPoint fusion, new links in the covisibility graph will appear attaching both sides of the loop
+	// After the MapPoint fusion, new links in the covisibility graph will appear attaching both sides of the loop
 	// 步骤5：更新当前关键帧之间的共视相连关系，得到因闭环时MapPoints融合而新得到的连接关系
 	map<KeyFrame*, set<KeyFrame*> > LoopConnections;
 
 	// 步骤5.1：遍历当前帧相连关键帧（一级相连）
-    for(vector<KeyFrame*>::iterator vit=mvpCurrentConnectedKFs.begin(), vend=mvpCurrentConnectedKFs.end(); vit!=vend; vit++)
-    {
+	for (vector<KeyFrame*>::iterator vit = mvpCurrentConnectedKFs.begin(), vend = mvpCurrentConnectedKFs.end(); vit != vend; vit++)
+	{
 		KeyFrame* pKFi = *vit;
 		// 步骤5.2：得到与当前帧相连关键帧的相连关键帧（二级相连）
 		vector<KeyFrame*> vpPreviousNeighbors = pKFi->GetVectorCovisibleKeyFrames();
@@ -606,32 +657,32 @@ void LoopClosing::CorrectLoop()
 		{
 			LoopConnections[pKFi].erase(*vit2);
 		}
-    }
+	}
 
-    // Optimize graph
+	// Optimize graph
 	// 步骤6：进行EssentialGraph优化，LoopConnections是形成闭环后新生成的连接关系，不包括步骤7中当前帧与闭环匹配帧之间的连接关系
-    Optimizer::OptimizeEssentialGraph(mpMap, mpMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections, mbFixScale);
+	Optimizer::OptimizeEssentialGraph(mpMap, mpMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections, mbFixScale);
 
-    mpMap->InformNewBigChange();
-
-    // Add loop edge
+	// Add loop edge
 	// 步骤7：添加当前帧与闭环匹配帧之间的边（这个连接关系不优化）
 	// 这两句话应该放在OptimizeEssentialGraph之前，因为OptimizeEssentialGraph的步骤4.2中有优化，（wubo???）
-    mpMatchedKF->AddLoopEdge(mpCurrentKF);
-    mpCurrentKF->AddLoopEdge(mpMatchedKF);
+	mpMatchedKF->AddLoopEdge(mpCurrentKF);
+	mpCurrentKF->AddLoopEdge(mpMatchedKF);
 
-    // Launch a new thread to perform Global Bundle Adjustment
+	// Launch a new thread to perform Global Bundle Adjustment
 	// 步骤8：新建一个线程用于全局BA优化
 	// OptimizeEssentialGraph只是优化了一些主要关键帧的位姿，这里进行全局BA可以全局优化所有位姿和MapPoints
-    mbRunningGBA = true;
-    mbFinishedGBA = false;
-    mbStopGBA = false;
-    mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment,this,mpCurrentKF->mnId);
+	mbRunningGBA = true;
+	mbFinishedGBA = false;
+	mbStopGBA = false;
+	mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment, this, mpCurrentKF->mnId);
 
-    // Loop closed. Release Local Mapping.
-    mpLocalMapper->Release();    
+	// Loop closed. Release Local Mapping.
+	mpLocalMapper->Release();
 
-    mLastLoopKFid = mpCurrentKF->mnId;   
+	cout << "Loop Closed!" << endl;
+
+	mLastLoopKFid = mpCurrentKF->mnId;
 }
 
 // 通过将闭环时相连关键帧的MapPoints投影到这些关键帧中，进行MapPoints检查与替换
