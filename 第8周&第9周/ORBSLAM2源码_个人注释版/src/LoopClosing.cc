@@ -61,13 +61,16 @@ void LoopClosing::Run()
     while(1)
     {
         // Check if there are keyframes in the queue
+		// 队列中是否有关键帧
         if(CheckNewKeyFrames())
         {
             // Detect loop candidates and check covisibility consistency
+			// 检测候选帧和检查共视一致性
             if(DetectLoop())
             {
                // Compute similarity transformation [sR|t]
                // In the stereo/RGBD case s=1
+			   // Sim3求解相似矩阵->s,R,t
                if(ComputeSim3())
                {
                    // Perform loop fusion and pose graph optimization
@@ -123,8 +126,8 @@ bool LoopClosing::DetectLoop()
     // This is the lowest score to a connected keyframe in the covisibility graph
     // We will impose loop candidates to have a higher similarity than this
 	// 2.遍历所有的共视KF，计算当前KF与每个共视KF的BoW相似度得分，并得到最低得分minScore
-    const vector<KeyFrame*> vpConnectedKeyFrames = mpCurrentKF->GetVectorCovisibleKeyFrames();
-    const DBoW2::BowVector &CurrentBowVec = mpCurrentKF->mBowVec;
+    const vector<KeyFrame*> vpConnectedKeyFrames = mpCurrentKF->GetVectorCovisibleKeyFrames();	//共视的帧
+    const DBoW2::BowVector &CurrentBowVec = mpCurrentKF->mBowVec;	//当前帧
     float minScore = 1;
     for(size_t i=0; i<vpConnectedKeyFrames.size(); i++)
     {
@@ -133,14 +136,14 @@ bool LoopClosing::DetectLoop()
             continue;
         const DBoW2::BowVector &BowVec = pKF->mBowVec;
 
-        float score = mpORBVocabulary->score(CurrentBowVec, BowVec);
+        float score = mpORBVocabulary->score(CurrentBowVec, BowVec);// 计算共视帧与当前帧相似度
 
         if(score<minScore)
-            minScore = score;
+            minScore = score;// 更新最小值
     }
 
     // Query the database imposing the minimum score
-	// 3.在所有KF中找出闭环备选帧
+	// 3.在所有KF中找出闭环备选帧，利用minScore和mpCurrentKF
     vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectLoopCandidates(mpCurrentKF, minScore);
 
     // If there are no loop candidates, just add new keyframe and return false
@@ -177,7 +180,7 @@ bool LoopClosing::DetectLoop()
         for(size_t iG=0, iendG=mvConsistentGroups.size(); iG<iendG; iG++)
         {
 			// 取出一个之前的子连续组
-            set<KeyFrame*> sPreviousGroup = mvConsistentGroups[iG].first;
+            set<KeyFrame*> sPreviousGroup = mvConsistentGroups[iG].first;// 组内的KF
 
 			// 遍历每个“子候选组”，检测候选组中每一个KF在“子连续组”中是否存在
 			// 如果有一帧共同存在与“子候选组”与之前的“子连续组”，那么“子候选组”与该“子连续组”连续
@@ -194,19 +197,19 @@ bool LoopClosing::DetectLoop()
 
             if(bConsistent)
             {
-                int nPreviousConsistency = mvConsistentGroups[iG].second;
+                int nPreviousConsistency = mvConsistentGroups[iG].second;//之前的子连续组的序号
                 int nCurrentConsistency = nPreviousConsistency + 1;
-                if(!vbConsistentGroup[iG])//这里作者的本意可能是[i]而不是[iG]
+                if(!vbConsistentGroup[iG])//这里作者的本意可能是[i]而不是[iG]-----没看懂2019.5.5
                 {
 					// 将该"子候选组"的该KF编号加入到"当前连续组"
                     ConsistentGroup cg = make_pair(spCandidateGroup,nCurrentConsistency);
                     vCurrentConsistentGroups.push_back(cg);
-                    vbConsistentGroup[iG]=true; //this avoid to include the same group more than once
+                    vbConsistentGroup[iG]=true; // this avoid to include the same group more than once
                 }
                 if(nCurrentConsistency>=mnCovisibilityConsistencyTh && !bEnoughConsistent)
                 {
                     mvpEnoughConsistentCandidates.push_back(pCandidateKF);
-                    bEnoughConsistent=true; //this avoid to insert the same candidate more than once
+                    bEnoughConsistent=true; // this avoid to insert the same candidate more than once
                 }
 
 				// 这里加一个break可能可以提高效率
