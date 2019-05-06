@@ -22,11 +22,11 @@
 * This file is part of ORB-SLAM2
 * 
 * 单目相机初始化
-* 用于平面场景的单应性矩阵H(8中运动假设) 和用于非平面场景的基础矩阵F(4种运动假设)，
-* 然后通过一个评分规则来选择合适的模型，恢复相机的旋转矩阵R和平移向量t 和 对应的3D点(尺度问题)。
+* 用于平面场景的单应性矩阵H(8种运动假设) 和用于非平面场景的基础矩阵F(4种运动假设)，
+* 然后通过一个评分规则RH来选择合适的模型，恢复相机的旋转矩阵R和平移向量t 和 对应的3D点(尺度问题)。
 * 
 * 
- *【0】2D-2D点对 求变换矩阵前先进行标准化  去 均值后再除以绝对矩
+ *【0】2D-2D点对 求变换矩阵前先进行标准化：去均值后再除以绝对矩
 * 单目初始化特征点 归一化 坐标均值为0  一阶绝对矩为1
 * mean_x  =  sum( ui) / N   mean_y =  sum(vi)/N
 * 绝对矩  mean_x_dev = sum（abs(ui - mean_x)）/ N     
@@ -53,11 +53,11 @@
 * 
 * 
 * 
-*【1】 2D- 2D 点对 单应矩阵  H   2D点对其次坐标  间的 转换 矩阵  3*3
+*【1】 2D- 2D 点对 单应矩阵  H   2D点对其次坐标间的转换矩阵  3*3
 *  采用归一化的直接线性变换（normalized DLT）
-* * p2 = H *p1 关键点  对的 变换关系矩阵H
- * 一个点对 2个约束
- * 4 点法求解  单应矩阵 H 再对 H进行分解
+* * p2 = H *p1 关键点对的变换关系矩阵H
+  * 一个点对、2个约束
+  * 4 点法求解单应矩阵 H ，再对H进行分解
 * 
 *【2】 对极几何 求解 基本矩阵 F  两组单目相机 2D图像
 * (随机采样序列 8点法求解)
@@ -101,9 +101,9 @@
  * 
  * 【5】单应矩阵求解
  *  *  1点 变成 2点   p2   =  H21 * p1
-      u2        h1  h2  h3        u1
-      v2  =    h4  h5  h6    *  v1
-      1          h7  h8  h9       1   
+		u2       h1  h2  h3       u1
+		v2  =    h4  h5  h6    *  v1
+		1        h7  h8  h9       1   
       
       u2 = (h1*u1 + h2*v1 + h3) /( h7*u1 + h8*v1 + h9)
       v2 = (h4*u1 + h5*v1 + h6) /( h7*u1 + h8*v1 + h9)
@@ -111,42 +111,41 @@
       -((h4*u1 + h5*v1 + h6) - ( h7*u1*v2 + h8*v1*v2 + h9*v2))=0  式子为0  左侧加 - 号不变
         h1*u1 + h2*v1 + h3 - ( h7*u1*u2 + h8*v1*u2 + h9*u2)=0
         
-        0    0   0  -u1  -v1  -1   u1*v2   v1*v2    v2
-        u1 v1  1    0    0    0   -u1*u2  - v1*u2  -u2    ×(h1 h2 h3 h4 h5 h6 h7 h8 h9)转置  = 0
+        0    0   0  -u1  -v1  -1   u1*v2    v1*v2    v2
+        u1  v1   1   0    0    0   -u1*u2  - v1*u2  -u2  × (h1 h2 h3 h4 h5 h6 h7 h8 h9)转置  = 0
         
         8对点  约束 A 
         A × h = 0 求h   奇异值分解 A 得到 单元矩阵 H
  * 
  * 【6】单应变换 求 变化距离误差
  *  * 1点 变成 2点   p2   =  H12 * p1
- u2        h11  h12  h13        u1
- v2  =    h21  h22  h23    *  v1
- 1          h31  h32  h33         1   第三行 
+		u2        h11  h12  h13       u1
+		v2  =     h21  h22  h23    *  v1
+		1         h31  h32  h33        1   第三行 
  
  * 2 点 变成 1点  p1   =  H21 * p2
- u1‘        h11inv   h12inv   h13inv         u2
- v1’  =    h21inv   h22inv   h23inv     *  v2
- 1          h31inv   h32inv   h33inv          1    第三行 h31inv*u2+h32inv*v2+h33inv 
+		u1'        h11inv   h12inv   h13inv         u2
+		v1’  =    h21inv   h22inv   h23inv      *  v2
+		1          h31inv   h32inv   h33inv          1    第三行 h31inv*u2+h32inv*v2+h33inv 
  前两行 同除以 第三行 消去非零因子
-  p2 由单应转换到 p1
-  u1‘ = (h11inv*u2+h12inv*v2+h13inv)* 第三行倒数
-  v1’ = (h21inv*u2+h22inv*v2+h23inv)*第三行倒数
+	p2 由单应转换到 p1
+		u1‘ = (h11inv*u2+h12inv*v2+h13inv)* 第三行倒数
+		v1’ = (h21inv*u2+h22inv*v2+h23inv)* 第三行倒数
   然后计算 和 真实 p1点 坐标的差值
    (u1-u2in1)*(u1-u2in1) + (v1-v2in1)*(v1-v2in1)   横纵坐标差值平方和
- * 
- 【7】单应矩阵恢复  旋转矩阵 R 和平移向量t
- p2   =  H21 * p1   
- p2 = K( RP + t)  = KTP = H21 * KP  
- T =  K 逆 * H21*K
+ * 【7】单应矩阵恢复  旋转矩阵 R 和平移向量t
+		p2   =  H21 * p1   
+		p2 = K( RP + t)  = KTP = H21 * KP  
+		T =  K 逆 * H21 * K
  
  【8】 基础矩阵 F求解
  *  * p2------> p1
- *                          f1   f2    f3      u1
- *   (u2 v2 1)    *   f4   f5    f6  *  v1    = 0  应该=0 不等于零的就是误差
- * 			     f7   f8    f9	     1
- * 	a1 = f1*u2 + f4*v2 + f7;
-	b1 = f2*u2 + f5*v2 + f8;
-	c1 =  f3*u2 + f6*v2 + f9;
+ *			                 f1   f2    f3      u1
+ *			(u2 v2 1)    *   f4   f5    f6  *   v1    = 0  应该=0 不等于零的就是误差
+ * 						     f7   f8    f9	     1
+ * 		a1 = f1 * u2 + f4*v2 + f7;
+		b1 = f2 * u2 + f5*v2 + f8;
+		c1 = f3 * u2 + f6*v2 + f9;
        a1*u2+ b1*v2+ c1= 0
       一个点对 得到一个约束方程
        f1*u1*u2 + f2*v1*u2  + f3*u2 + f4*u1*v2  + f5*v1*v2 + f6*v2 +  f7*u1 + f8*v1 + f9 =0
@@ -155,13 +154,13 @@
      
      8个点对 得到八个约束
      
-     A *f = 0 求 f   奇异值分解得到F 基础矩阵 且其秩为2 需要再奇异值分解 后 取对角矩阵 秩为2 后在合成F
+     A *f = 0 求 f, 奇异值分解得到F (基础矩阵),且其秩为2,需要再奇异值分解后.取对角矩阵 秩为2 后再合成F
  
  * 【9】 基础矩阵 F 求变换误差
  *  * p2 ------> p1 
- *                          f11   f12    f13      u1
- *   (u2 v2 1)    *   f21   f22    f23  *  v1    = 0  应该=0 不等于零的就是误差
- * 			     f31   f32    f33 	   1
+ *                    f11   f12    f13      u1
+ *   (u2 v2 1)    *   f21   f22    f23  *   v1    = 0  应该=0 不等于零的就是误差
+ * 					  f31   f32    f33 	     1
  * 	a1 = f11*u2+f21*v2+f31;
 	b1 = f12*u2+f22*v2+f32;
 	c1 = f13*u2+f23*v2+f33;
@@ -181,13 +180,13 @@
   kp2 叉乘  P2 * p3dC1 =0  
  p = ( x,y,1)
  其叉乘矩阵为
-     //  叉乘矩阵 = [0  -1  y;
-    //                      1   0  -x; 
-    //                      -y  x  0 ]  
+    //   叉乘矩阵 = [ 0  -1   y;
+    //                1   0  -x; 
+    //               -y   x   0 ]  
   一个方程得到两个约束
   对于第一行 0  -1  y; 会与P的三行分别相乘 得到四个值 与齐次3d点坐标相乘得到 0
   有 (y * P.row(2) - P.row(1) ) * D =0
-      (-x *P.row(2) + P.row(0) ) * D =0 ===> (x *P.row(2) - P.row(0) ) * D =0
+     (-x *P.row(2) + P.row(0) ) * D =0 ===> (x *P.row(2) - P.row(0) ) * D =0
     两个方程得到 4个约束
     A × D = 0
     对A进行奇异值分解 求解线性方程 得到 D  （D是3维齐次坐标，需要除以第四个尺度因子 归一化）
@@ -229,8 +228,8 @@ Initializer::Initializer(const Frame &ReferenceFrame, float sigma, int iteration
 /**
  * @brief 类初始化函数 
  * 并行地计算基础矩阵和单应性矩阵，选取其中一个模型，恢复出最开始两帧之间的相对姿态以及点云
- * @param CurrentFrame   当前帧       和 第一帧 参考帧 匹配 三角变换得到 3D点
- * @param vMatches12       当前帧 特征点的匹配信息
+ * @param CurrentFrame		当前帧 和 第一帧 参考帧 匹配 三角变换得到 3D点
+ * @param vMatches12		当前帧 特征点的匹配信息
  * @param R21                     旋转矩阵 
  * @param t21                     平移矩阵  
  * @param vP3D                  恢复出的3D点
@@ -241,7 +240,7 @@ Initializer::Initializer(const Frame &ReferenceFrame, float sigma, int iteration
 	{
 	    // Fill structures with current keypoints and matches with reference frame
 	    // Reference Frame: 1,  Current Frame: 2
-// Frame2  当前帧 畸变校正后的 关键 点
+		// Frame2  当前帧 畸变校正后的 关键 点
 	    mvKeys2 = CurrentFrame.mvKeysUn;// 当前帧(2) 关键点
  
 	    mvMatches12.clear();// 当前帧(2)  关键点 的匹配信息

@@ -786,7 +786,7 @@ void Tracking::MonocularInitialization()
             if(mpInitializer)
                 delete mpInitializer;
 
-            mpInitializer =  new Initializer(mCurrentFrame,1.0,200);
+            mpInitializer =  new Initializer(mCurrentFrame,1.0,200);// 初始化，(const Frame &ReferenceFrame, float sigma, int iterations)
 
             fill(mvIniMatches.begin(),mvIniMatches.end(),-1);
 
