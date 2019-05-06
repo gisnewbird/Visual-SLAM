@@ -379,6 +379,7 @@ float MapPoint::GetMinDistanceInvariance()
 float MapPoint::GetMaxDistanceInvariance()
 {
     unique_lock<mutex> lock(mMutexPos);
+	// 会存在一个尺度的最大距离
     return 1.2f*mfMaxDistance;
 }
 
